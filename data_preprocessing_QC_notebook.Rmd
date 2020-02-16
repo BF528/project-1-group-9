@@ -1,0 +1,136 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+#Load libraries
+
+```{r results='hide'}
+library(affy)
+library(affyPLM)
+library(sva)
+library(AnnotationDbi)
+library(hgu133plus2.db)
+library(tidyverse)
+```
+## read the data, caclulate normalized expression
+what does rma actually do? normalize across probesets?
+
+```{r}
+data_files<-list.files('/projectnb/bf528/users/group9/project1/samples/',full=TRUE)
+#data_files<-list.files('/project/bf528/project_1/data/GSE39582/CEL_files/samples/',full=TRUE)
+
+affydata<-ReadAffy(filenames=data_files,compress=TRUE)
+normalized_expression<-rma(affydata)
+```
+#Calculating RLE and NUSE by using fitPLM
+Computing Relative Log Expression (RLE) and Normalized Unscaled Standard Error (NUSE), following this link: https://www.bioconductor.org/packages/release/bioc/vignettes/affyPLM/inst/doc/QualityAssess.pdf
+
+##options used in fitPLM are:
+normalize:  If TRUE performs quanitle normalization where each array is rank ordered
+(each array tests multiple genes and so gene expression is ordered), average values for 
+most-expressed, 2nd most expressed etc are caclulated across arrays. Then the array readout is
+replaced by what you would expect for a gene expression of that rank
+background:  If TRUE background correct using RMA background correction. This corrects for the 
+noise in the readout due to light from nearby cells in the microarray, and other such background noise
+```{r}
+Probe_Set <- fitPLM(affydata,normalize=TRUE, background=TRUE) #this fits probe-level models to all of the probesets.
+```
+first we visualize residuals
+```{r}
+image(Probe_Set,which=2, type="resids")#visualized residuals to check data quality 
+```
+## now we calculate RLE(Relative Log Expression)
+RLE by default plots a bar plot with medians but 
+```{r}
+RLE(Probe_Set,main="RLE for the cancer dataset")
+```
+we can also extract the medians from it by using the option "stats"
+the output from stats has medians along rows, to get it along columns
+we transpose the data frame and apply "as.data.frame" (not "data.frame") to it.
+```{r}
+RLE_stats<-data.frame(RLE(Probe_Set, type="stats"))
+RLE_stats<-as.data.frame(t(RLE_stats) ) 
+#png("/projectnb/bf528/users/group9/project1/histogram_RLE.png")
+hist(RLE_stats$median, xlab="median RLE values")
+# dev.off()
+```
+
+##now calculate NUSE (Normalized Unscaled Standard Error )
+the procedure is similar to RLE
+```{r}
+
+NUSE(Probe_Set,main="NUSE for the cancer dataset")
+NUSE_stats<-as.data.frame(t(NUSE(Probe_Set,type="stats")))
+# png("/projectnb/bf528/users/group9/project1/histogram_NUSE.png")
+hist(NUSE_stats$median,xlab="median NUSE values")
+#dev.off()
+```
+
+
+# Batch correcting using ComBat
+the paper "The SVA package for removing batch effects and other unwanted variation in high-throughput experiments" by Leek et. al.
+introduces the way to correct for batch effects using sva package or combat.
+It works a little bit like comparing the linear model fit to confounders(batch variables) only which is a  null model, and the linear model fit to confounders & the target variable of interest ( cancer here).
+
+##Load metadata
+```{r results='hide'}
+metadata_file='/project/bf528/project_1/doc/proj_metadata.csv'
+metadata<-read.csv(metadata_file, header=TRUE)
+```
+
+## caclulate expression matrix,and model matrix to pass to ComBat to correct for batch effects.
+the model matrix is computed using the model.matrix function. it does not includes the batch variable; the batch variable is passed separarely
+```{r}
+expression_matrix<-exprs(normalized_expression) ### we need a matrix of expression x samples for ComBat
+model_matrix<-model.matrix(~as.factor(normalizationcombatmod), data=metadata)
+Combat_data<-ComBat(dat=expression_matrix, batch=metadata$normalizationcombatbatch,  mod =model_matrix)
+write.csv(Combat_data, "/projectnb/bf528/users/group9/project1/batch_corrected_expression_values.csv")
+```
+# Perform PCA
+
+```{r}
+Combat_data_t <- t(Combat_data)
+Combat_data_t <- scale(Combat_data_t)
+Combat_data_scaled <- t(Combat_data_t)
+pca_out <- prcomp(Combat_data_scaled, scale = FALSE, center = FALSE)
+summary(pca_out) ## many principal components required to explain a finite fraction of the variance
+
+```
+plot and save the PCA
+```{r}
+rotated_pca<-as.data.frame(pca$rotation)
+# png("/projectnb/bf528/users/group9/project1/PCA_plot.png")
+ggplot(data = rotated_pca, mapping = aes(x = PC1, y = PC2)) +geom_point()+labs(title = 'PCA plot', x= 'PC1 11.47%', y='PC2 8.409%')
+#dev.off()
+## automatic plotting doesnt work because we scaled separaely
+# library(ggfortify)
+# autoplot(pca_out)
+# library(ggbiplot)
+# ggbiplot(pca_out)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

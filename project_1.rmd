@@ -1,0 +1,227 @@
+---
+title: "project_1"
+author: "avanvalken"
+date: "2/4/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## project_1
+
+## load libraries
+```{r}
+library(tidyverse)
+library(limma)
+library(purrr)
+library(cluster)
+```
+
+
+```{r}
+#import data
+data <- read_delim("batch_corrected_expression_values.csv", ",")
+
+
+```
+
+##Filter 20% > log2(15)
+```{r}
+
+data <-  column_to_rownames(data, var="X1")
+
+col <- colnames(data, do.NULL = FALSE)
+column_names <- as.list(col[1:35])
+
+test <- lapply(data[,1:35], quantile, 0.8)
+good_test <- test[test > log2(15)]
+good_test_names <- as.character(names(good_test))
+
+
+
+
+newdataset <- as.data.frame(data[, good_test_names])
+
+```
+
+##chi squared filter
+```{r}
+#m <- as.vector(dplyr::filter(newdataset[1,]))
+
+RowVar <- function(x, ...) {
+  rowSums((x - rowMeans(x, ...))^2, ...)/(dim(x)[2] - 1)
+}
+
+## Create function to perform chi-square test.
+var.interval = function(data,sigma0,conf.level = 0.99) {
+  df = length(data) - 1
+  chilower = qchisq((1 - conf.level)/2, df)
+  chiupper = qchisq((1 - conf.level)/2, df, lower.tail = FALSE)
+  v = var(data)
+  testchi = df*v/(sigma0^2)
+  alpha = 1-conf.level
+
+ # print(paste("Standard deviation = ", round(sqrt(v),4)),quote=FALSE)
+  print(paste("Median Test statistic = ", round(median(testchi,4))),quote=FALSE)
+  print(paste("Degrees of freedom = ", round(df,0)),quote=FALSE)
+  print(" ",quote=FALSE)
+  print("Two-tailed test critical values, alpha=0.01",quote=FALSE)
+  print(paste("Lower = ", round(qchisq(alpha/2,df),4)),quote=FALSE)
+  print(paste("Upper = ", round(qchisq(1-alpha/2,df),4)),quote=FALSE)
+  print(" ",quote=FALSE)
+ # print("95% Confidence Interval for Standard Deviation",quote=FALSE)
+  #print(c(round(sqrt(df * v/chiupper),4), 
+        # round(sqrt(df * v/chilower),4)),quote=FALSE)
+}
+
+## Perform chi-square test.
+var.interval(newdataset,0.1)
+#median test stat of all = 14428
+median_test_stat <- 14544
+crit_value_lower <- 16.5013
+crit_value_upper <- 58.9639
+
+## Test stat for each gene
+gene_var <- as.list(RowVar(data))
+teststat <- function(v,df=34, sig2 = 0.01){
+  df*v/sig2
+}
+gene_test_stat <- lapply(gene_var, teststat)
+
+
+use_genes <- keep(gene_test_stat, gene_test_stat[]> crit_value_upper)
+
+#make new dataset with filtered genes
+use_genes_names <- names(use_genes)
+selected_genes <- as.data.frame(newdataset[use_genes_names,])
+
+```
+
+
+## coefficient of variation > 0.186
+```{r}
+
+gene_var_selected <- as.list(gene_var[use_genes_names])
+
+## sd/mean
+standard_dev <- lapply(gene_var_selected, sqrt)
+meansx <- as.list(rowMeans(selected_genes))
+
+cv <- list()
+for(i in 1:length(standard_dev)){
+  cv[i] <- (standard_dev[[i]]/meansx[[i]])
+}
+
+names(cv) <- names(gene_var_selected)
+
+last_filter_ <- keep(cv, cv[]>0.186)
+last_filter_names <- names(last_filter_)
+
+final_gene_list <- as.data.frame(selected_genes[last_filter_names,])
+
+
+
+
+```
+
+#deliver final_gene_list, gene number
+```{r}
+
+write_csv(final_gene_list, "deliverable4-4_final_gene_list.csv")
+
+print(paste("The number of filtered genes is: ", nrow(final_gene_list)))
+```
+
+##perform heirarchal clustering
+```{r}
+#scale genes
+scaled_genes <- scale(final_gene_list)
+
+#transpose for diana
+t_scaled_genes <- t(scaled_genes)
+
+# compute divisive hierarchical clustering
+clustered <- diana(t_scaled_genes)
+ 
+# Divise coefficient
+clustered$dc
+ 
+ 
+# plot dendrogram
+pltree(clustered, cex = 0.6, hang = -1, main = "Dendrogram of Samples")
+```
+
+##cut dendogram into 2, how many samples in each cluster?
+```{r}
+clust <- as.data.frame(cutree(clustered, k = 2))
+
+row.names(clust) <- column_names
+clust <- rownames_to_column(clust, var = "sample")
+clust <- rename(clust, value = "cutree(clustered, k = 2)")
+
+
+group1 <- filter(clust, clust$value == "1")
+group2 <- filter(clust, clust$value == "2")
+
+
+```
+
+##heatmap()
+```{r}
+final_gene_list <- as.data.frame(final_gene_list)
+final_gene_list_matrix <- as.matrix(final_gene_list)
+heatmap(final_gene_list_matrix)
+#ColSideColors = red or blue
+# subtype info in cit-coloncancermolecularsubtype
+metadata <- read_csv("proj_metadata.csv")
+meta <- select(metadata, geo_accession,`cit-coloncancermolecularsubtype`)
+
+
+```
+
+##WelchTtest(differential expression)
+```{r}
+group1names <- group1$sample
+group2names <- group2$sample
+
+group1_genes <- dplyr::select(final_gene_list, group1names)
+group2_genes <- dplyr::select(final_gene_list, group2names)
+
+org_genes <- cbind(group1_genes, group2_genes)
+
+bestp <- apply(org_genes, 1, function(x){t.test(x[1:16], x[17:35]) $p.value})
+```
+
+##select most differentially expressed genes
+```{r}
+bestp2 <- as.data.frame(bestp)
+bestp2 <- rename(bestp2, p.value="bestp")
+plist <- as.vector(bestp)
+
+adjusted <- p.adjust(plist, method = "fdr")
+
+bestp2$p.val.adj <- adjusted
+
+
+final_gene_names <- rownames(final_gene_list)
+
+final_gene_test_stat <- keep(gene_test_stat, names(gene_test_stat) %in% final_gene_names)
+
+bestp2$test.stat <- final_gene_test_stat[]
+
+
+
+```
+
+##final deliverables
+```{r}
+
+print(paste("The number of significant genes in each cluster is:", nrow(group1), "for cluster 1;", nrow(group2), "for cluster 2."))
+sig_genes <- filter(bestp2, p.value < 0.05)
+print(paste("The number of significant (p < 0.5) genes is: ", nrow(sig_genes)))
+
+write_csv(bestp2, "Welch_t_test_results.csv")
+```
+
